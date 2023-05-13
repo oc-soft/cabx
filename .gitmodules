@@ -1,0 +1,3 @@
+[submodule "oclib"]
+	path = oclib
+	url = ssh://toshi@oc-soft.net:8169/home/toshi/projects/repo/oclib.git
