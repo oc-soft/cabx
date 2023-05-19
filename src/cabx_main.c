@@ -2,6 +2,7 @@
 #include <fci.h>
 #include <unistd.h>
 #include <iconv.h>
+#include <locale.h>
 #include "cabx.h"
 #include "str_conv.h"
 
@@ -50,6 +51,7 @@ wmain(
     CABX* cab;
     result = 0;
     cab = NULL;
+    setlocale(LC_ALL, "");
     argv_utf8 = argv_to_utf8(argc, argv);
 
     result = argv_utf8 ? 0 : -1;

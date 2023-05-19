@@ -1,4 +1,4 @@
-SUBDIRS=src
+SUBDIRS=oclib src
 
 ACLOCAL_FLAGS=-I m4
 

@@ -12,6 +12,7 @@ LT_LANG([Windows Resource])
 
 
 AC_PROG_CC
+AC_CHECK_PROG([GPERF], [gperf --version], [gperf])
 
 AC_CONFIG_HEADERS([src/config.h])
 

@@ -1,0 +1,58 @@
+%{
+#include "name_compression.h"
+#include <errno.h>
+#include <windows.h>
+#include <fci.h>
+#include <string.h>
+typedef struct _name_code name_code;
+%}
+
+struct _name_code {
+    /**
+     * name
+     */
+    char* name;
+    /**
+     * code
+     */
+    int code;
+};
+%struct-type
+%%
+NONE, tcompTYPE_NONE 
+MSZIP, tcompTYPE_MSZIP
+QUANTUM, tcompTYPE_QUANTUM
+LZX, tcompTYPE_LZX
+%%
+
+/**
+ * string to compression code
+ */
+int
+name_compression_str_to_code(
+    const char* str,
+    int* code)
+{
+
+    int result;
+    if (str && code) {
+        name_code* name_code_entry;
+        name_code_entry = NULL;
+        name_code_entry = in_word_set(str, strlen(str)); 
+        if (name_code_entry) {
+            result = 0;
+            *code = name_code_entry->code;
+        } else {
+            result = 1;
+        }
+    } else {
+        result = -1;
+        errno = EINVAL;
+    }
+ 
+    return result;
+}
+
+
+
+/* vi: se ts=4 sw=4 et: */
