@@ -38,6 +38,11 @@ typedef struct _CABX_ENTRY CABX_ENTRY;
 typedef struct _CABX_ENTRY_ITER_STATE CABX_ENTRY_ITER_STATE;
 
 /**
+ * cabinet generation status
+ */
+typedef struct _CABX_GENERATION_STATUS CABX_GENERATION_STATUS;
+
+/**
  * cabinet generator
  */
 struct _CABX {
@@ -85,12 +90,6 @@ struct _CABX_OPTION {
      * output directory into where cabinet file be created.
      */
     char* output_dir;
-
-
-    /**
-     * temporary name base
-     */
-    char* temporary_name;
 
     /**
      * cabinet name
@@ -160,7 +159,32 @@ struct _CABX_ENTRY_ITER_STATE {
 };
 
 
+/**
+ * generation status
+ */
+struct _CABX_GENERATION_STATUS {
 
+    /**
+     * cabinet object
+     */
+    CABX* cabx;
+
+
+    /**
+     * count of processed files
+     */
+    unsigned long count_of_processed_files;
+
+    /**
+     * compressed size
+     */
+    unsigned long compressed_size;
+
+    /**
+     * end of generation
+     */
+    int end_of_generation;
+};
 
 
 /**
@@ -462,6 +486,7 @@ cabx_fci_get_next_cabinet(
     CCAB* cab_param,
     unsigned long previous_cab,
     void* user_data);
+
 
 /**
  * progress
@@ -995,14 +1020,10 @@ cabx_entries_iter(
     char* encoded_name;
     int encoded_attr;
     wchar_t* entry_name_w;
-    wchar_t* source_file_w;
     result = 0;
     encoded_attr = 0;
     encoded_name = NULL;
 
-    source_file_w = str_conv_utf8_to_utf16(
-        entry->source_file, strlen(entry->source_file) + 1,
-        cabx_i_mem_alloc, cabx_i_mem_free);
 
     entry_name_w = str_conv_utf8_to_utf16(
         entry->entry_name, strlen(entry->entry_name) + 1,
@@ -1021,7 +1042,7 @@ cabx_entries_iter(
             cabx_fci_get_open_info,
             entry->compression);
         result = state ? 0 : -1;
-    } 
+    }
     if (result == 0 && entry->flush_folder) {
         int state;
         state = FCIFlushFolder(iter_state->fci_handle,
@@ -1029,6 +1050,7 @@ cabx_entries_iter(
             cabx_fci_progress);
         result = state ? 0 : -1;
     }
+  
     if (result == 0 && entry->flush_cabinet) {
         int state;
         state = FCIFlushCabinet(iter_state->fci_handle,
@@ -1040,7 +1062,6 @@ cabx_entries_iter(
 
 
     cabx_i_mem_free(entry_name_w);
-    cabx_i_mem_free(source_file_w);
     return result;
 }
 
@@ -1060,7 +1081,8 @@ cabx_encode_str(
     int utf_attr;
     utf_attr = 0;
     src_len = strlen(src);
-    utf16_str = (unsigned short*)str_conv_utf8_to_utf16(src, src_len,
+    utf16_str = (unsigned short*)str_conv_utf8_to_utf16(
+        src, src_len + 1,
         cabx_i_mem_alloc, cabx_i_mem_free);
     result = utf16_str ? 0 : -1;
     buffer = NULL;
@@ -1162,13 +1184,18 @@ cabx_generate(
     int result;
     HFCI fci_hdl;
     ERF fci_err;
+    CABX_GENERATION_STATUS gen_status;
     CCAB cab_param;
     result = 0;
     fci_hdl = NULL;
     memset(&fci_err, 0, sizeof(fci_err));
+    memset(&gen_status, 0, sizeof(gen_status));
     result = cabx_load_entries(obj);
     if (result == 0) {
         result = cabx_fill_cab_param(obj, &cab_param);
+    }
+    if (result == 0) {
+        gen_status.cabx = obj;
     }
     if (result == 0) {
         fci_hdl = FCICreate(&fci_err,
@@ -1183,12 +1210,30 @@ cabx_generate(
             cabx_fci_delete,
             cabx_fci_get_temporary_file_name,
             &cab_param,
-            obj);
+            &gen_status);
     }
     if (result == 0) {
-        cabx_create_cab(obj, fci_hdl);
+        result = cabx_create_cab(obj, fci_hdl);
     }
 
+    if (result == 0) {
+        int state;
+        state = FCIFlushFolder(fci_hdl,
+            cabx_fci_get_next_cabinet,
+            cabx_fci_progress);
+        result = state ? 0 : -1;
+    }
+    if (result == 0) {
+        gen_status.end_of_generation = 1;
+    }
+    if (result == 0) {
+        int state;
+        state = FCIFlushCabinet(fci_hdl,
+            FALSE,
+            cabx_fci_get_next_cabinet,
+            cabx_fci_progress);
+        result = state ? 0 : -1;
+    }
     if (fci_hdl) {
         FCIDestroy(fci_hdl);
     }
@@ -1209,7 +1254,7 @@ cabx_fill_cab_param(
     memset(param, 0, sizeof(*param));
 
     param->cb = ULONG_MAX;
-    param->cbFolderThresh = ULONG_MAX; 
+    param->cbFolderThresh = 0; 
     param->iCab = 0;
 
     snprintf(
@@ -1246,17 +1291,14 @@ cabx_option_create()
     char* input;
     char* output_dir;
     char* cabinet_name;
-    char* temporary_name;
     result = (CABX_OPTION*)cabx_i_mem_alloc(sizeof(CABX_OPTION));
     input = cabx_i_str_dup("-");
-    output_dir = cabx_i_str_dup("-");
+    output_dir = cabx_i_str_dup(".\\");
     cabinet_name = cabx_i_str_dup("data%d.cab");
-    temporary_name = cabx_i_str_dup("cab-tmp");
-    if (result && input && output_dir && cabinet_name && temporary_name) {
+    if (result && input && output_dir && cabinet_name) {
         result->input = input;
         result->output_dir = output_dir;
         result->cabinet_name = cabinet_name;
-        result->temporary_name = temporary_name;
     } else {
         if (input) {
             cabx_i_mem_free(input);
@@ -1266,9 +1308,6 @@ cabx_option_create()
         }
         if (cabinet_name) {
             cabx_i_mem_free(cabinet_name);
-        }
-        if (temporary_name) {
-            cabx_i_mem_free(temporary_name);
         }
         if (result) {
             cabx_i_mem_free(result);
@@ -1348,32 +1387,6 @@ cabx_option_set_output_dir(
     return result;
 }
 
-/**
- * set temporary name into option
- */
-static int
-cabx_option_set_temporary_name(
-    CABX_OPTION* opt,
-    const char* temporary_name)
-{
-    int result;
-    result = 0;
-    if (opt) {
-        if (opt->temporary_name != temporary_name) {
-            if (opt->temporary_name) {
-                cabx_i_mem_free(opt->temporary_name);
-                opt->temporary_name = NULL;
-            }
-            if (temporary_name) {
-                opt->temporary_name = cabx_i_str_dup(temporary_name);
-            }
-        }
-    } else {
-        errno = EINVAL;
-        result = -1;
-    }
-    return result;
-}
 
 /**
  * set cabinet name into option
@@ -1681,10 +1694,25 @@ cabx_fci_open(
         fd = _wopen(file_path_w, open_flag, mode); 
         if (fd >= 0) {
             const char* f_mode;
-            if (open_flag & _O_RDONLY) {
-                f_mode = "r";
-            } else {
+            int r_opt = _O_RDONLY;
+            int r_p_opt = _O_RDWR; 
+            int w_opt = _O_WRONLY | _O_CREAT | _O_TRUNC;
+            int w_p_opt = _O_RDWR | _O_CREAT | _O_TRUNC;
+            int a_opt = _O_WRONLY | _O_CREAT | _O_APPEND;
+            int a_p_opt = _O_RDWR | _O_CREAT | _O_APPEND;
+            
+            if ((open_flag & a_p_opt) == a_p_opt) {
+                f_mode = "a+";
+            } else if ((open_flag & a_opt) == a_opt) {
+                f_mode = "a";
+            } else if ((open_flag & w_p_opt) == w_p_opt) {
+                f_mode = "w+";
+            } else if ((open_flag & w_opt) == w_opt) {
                 f_mode = "w";
+            } else if ((open_flag & r_p_opt) == r_p_opt) {
+                f_mode = "r+";
+            } else {
+                f_mode = "r";
             }
             fs = _fdopen(fd, f_mode);
         }
@@ -1713,8 +1741,8 @@ cabx_fci_read(
 {
     FILE* fs;
     size_t read_size;
+    read_size = 0;
     fs = (FILE*)file_hdl;
-
     read_size = fread(buffer, 1, buffer_size, fs);
 
     if (read_size == 0 && feof(fs) == 0) {
@@ -1740,7 +1768,7 @@ cabx_fci_write(
 
     written_size = fwrite(buffer, 1, buffer_size, fs);
 
-    if (written_size == 0 && feof(fs) == 0) {
+    if (written_size != buffer_size) {
         *err = errno;
     }
     return (unsigned int)written_size;
@@ -1760,11 +1788,14 @@ cabx_fci_seek(
     FILE* fs;
     long result;
     fs = (FILE*)file_hdl;
-    result = 0;
+    result = -1;
     if (fs) {
-        result = fseek(fs, dist, seek_type);
-        if (result) {
+        int state;
+        state = fseek(fs, dist, seek_type);
+        if (state) {
             *err = errno;
+        } else {
+            result = ftell(fs);
         }
     } else {
         *err = EINVAL;
@@ -1838,7 +1869,7 @@ cabx_fci_get_temporary_file_name(
     int result;
     wchar_t* tmp_file_w;
     const size_t tmp_file_w_size = PATH_MAX;
-    CABX* cab_obj = (CABX*)user_data;
+    CABX_GENERATION_STATUS* gen_status = (CABX_GENERATION_STATUS*)user_data;
 
     tmp_file_w = (wchar_t*)cabx_i_mem_alloc(tmp_file_w_size * sizeof(wchar_t)); 
     result = tmp_file_w ? TRUE : FALSE;
@@ -1876,17 +1907,19 @@ cabx_fci_get_next_cabinet(
     void* user_data)
 {
     int result;
-    CABX* cabx;
-    result = TRUE;
-    cabx = (CABX*)user_data;
+    CABX_GENERATION_STATUS* gen_status;
+    result = FALSE;
+
+    gen_status = (CABX_GENERATION_STATUS*)user_data;
 
     snprintf(cab_param->szCab,
         sizeof(cab_param->szCab),
-        cabx->option->cabinet_name,
+        gen_status->cabx->option->cabinet_name,
         cab_param->iCab);
 
     return result;
 }
+
 
 /**
  * progress
@@ -1899,7 +1932,9 @@ cabx_fci_progress(
     void* user_data)
 {
     long result;
+    CABX_GENERATION_STATUS* gen_status;
     result = 0;
+    gen_status = (CABX_GENERATION_STATUS*)user_data;
     
     switch (status) {
         case statusFile:
@@ -1907,7 +1942,11 @@ cabx_fci_progress(
         case statusFolder:
             break;
         case statusCabinet:
-            result = LONG_MAX;
+            if (gen_status->end_of_generation) {
+                result = -1;
+            } else {
+                result = data_2;
+            }
             break;
     }
 
@@ -1929,7 +1968,7 @@ cabx_fci_get_open_info(
     wchar_t* file_path_w;
     size_t file_path_len;
     struct _stat stat_content;
-    CABX* cabx;
+    CABX_GENERATION_STATUS* gen_status;
     intptr_t result;
     cstr* source_path_cstr;
     cstr* entry_name_cstr;
@@ -1938,7 +1977,7 @@ cabx_fci_get_open_info(
     FILE* fs;
     unsigned short attr_0;
 
-    cabx = (CABX*)user_data;
+    gen_status = (CABX_GENERATION_STATUS*)user_data;
     entry_name_cstr = NULL;
     source_path_cstr = NULL;
     entry_name = NULL;
@@ -1957,8 +1996,6 @@ cabx_fci_get_open_info(
     if (state == 0) {
         state = _fstat(_fileno(fs), &stat_content);
     }
-
-
 
     if (state == 0) {
         struct tm* tm_info;
@@ -1988,19 +2025,19 @@ cabx_fci_get_open_info(
     }
     if (state == 0) {
         col_map_get(
-            cabx->source_path_entry_map,
+            gen_status->cabx->source_path_entry_map,
             source_path_cstr, (void**)&entry_name_cstr);
     }
     if (entry_name_cstr) {
         entry_name = cstr_to_flat_str(entry_name_cstr);
-        result = entry_name ? 0 : -1;
+        state = entry_name ? 0 : -1;
     } 
     if (entry_name) {
         char* encoded_str;
         int encoded_attr;
         encoded_attr = 0;
         encoded_str = NULL; 
-        result = cabx_encode_str(entry_name,
+        state = cabx_encode_str(entry_name,
             &encoded_str, &encoded_attr);
         attr_0 |= (unsigned short)encoded_attr; 
     }
