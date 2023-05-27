@@ -8,6 +8,7 @@ cabx_SOURCES=cabx.c \
 	exe_info_win.c \
 	str_conv_win.c \
 	number_parser.c \
+	str_hash.c \
 	name_compression.gpf
 
 cabx_CPPFLAGS=-I$(srcdir)/../include \

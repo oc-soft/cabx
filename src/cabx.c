@@ -21,6 +21,7 @@
 #include "name_compression.h"
 #include "number_parser.h"
 #include "str_conv.h"
+#include "str_hash.h"
 
 /**
  * option for cabinet genertor
@@ -28,9 +29,14 @@
 typedef struct _CABX_OPTION CABX_OPTION;
 
 /**
- * cab entry
+ * entry for a cabinet
  */
 typedef struct _CABX_ENTRY CABX_ENTRY;
+
+/**
+ * processed entries
+ */
+typedef struct _CABX_PROCESSED CABX_PROCESSED;
 
 /**
  * entry iteration status
@@ -63,6 +69,13 @@ struct _CABX {
      */
     col_map* source_path_entry_map;
 
+
+
+    /**
+     * entry name processed map
+     */
+    col_map* entry_processed_map;
+
     /**
      * run main application
      */
@@ -85,7 +98,6 @@ struct _CABX_OPTION {
      */
     char* input;
 
-
     /**
      * output directory into where cabinet file be created.
      */
@@ -95,6 +107,16 @@ struct _CABX_OPTION {
      * cabinet name
      */
     char* cabinet_name;
+
+    /**
+     * disk name
+     */
+    char* disk_name;
+
+    /**
+     * cabinet size
+     */
+    unsigned long max_cabinet_size;
 };
 
 /**
@@ -144,18 +166,61 @@ struct _CABX_ENTRY {
 };
 
 /**
+ * processed file entry
+ */
+struct _CABX_PROCESSED  {
+
+    /**
+     * reference count
+     */
+    unsigned int ref_count;
+    /**
+     * compressed size
+     */
+    unsigned long compressed_size;
+
+    /**
+     * uncompressed size
+     */
+    unsigned long uncompressed_size;
+
+
+    /**
+     * cabinet name
+     */
+    char* cabinet_name;
+
+    /**
+     * cabinet number
+     */
+    int cabinet_number;
+};
+
+/**
  * entry iteration status
  */
 struct _CABX_ENTRY_ITER_STATE {
     /**
      * last compression type
      */
+
     int last_compression_type;
+
+    /**
+     * processed count
+     */
+    size_t processed_count;
 
     /**
      * fci handle
      */
     HFCI fci_handle;
+
+
+    /**
+     * generation status
+     */
+    CABX_GENERATION_STATUS* generation_status;
 };
 
 
@@ -169,6 +234,10 @@ struct _CABX_GENERATION_STATUS {
      */
     CABX* cabx;
 
+    /**
+     * cabinet configuration
+     */
+    CCAB* ccab;
 
     /**
      * count of processed files
@@ -184,6 +253,17 @@ struct _CABX_GENERATION_STATUS {
      * end of generation
      */
     int end_of_generation;
+
+
+    /**
+     * count of files in not flushed folder
+     */
+    size_t not_flushed_file_count;
+
+    /**
+     * entry name
+     */
+    const char* entry_name;
 };
 
 
@@ -227,7 +307,8 @@ cabx_load_entries(
 static int
 cabx_create_cab(
     CABX* obj,
-    HFCI fci_hdl);
+    HFCI fci_hdl,
+    CABX_GENERATION_STATUS* generation_status);
 
 /**
  * load entries from csv
@@ -307,6 +388,24 @@ cabx_option_set_cabinet_name(
     const char* cabinet_name);
 
 /**
+ * set disk name into option
+ */
+static int
+cabx_option_set_disk_name(
+    CABX_OPTION* opt,
+    const char* disk_name);
+
+/**
+ * set max cabinet size by string format into option
+ */
+static int
+cabx_option_set_max_cabinet_size(
+    CABX_OPTION* opt,
+    const char* max_size);
+
+
+
+/**
  * cab entry
  */
 static CABX_ENTRY*
@@ -377,6 +476,60 @@ static int
 cabx_entry_set_entry_name(
     CABX_ENTRY* entry,
     const char* entry_name);
+
+/**
+ * create processed entry
+ */
+static CABX_PROCESSED*
+cabx_processed_create();
+
+/**
+ * increment reference count
+ */
+static unsigned int
+cabx_processed_retain(
+    CABX_PROCESSED* obj);
+
+/**
+ * decrement reference count
+ */
+static unsigned int
+cabx_processed_release(
+    CABX_PROCESSED* obj);
+
+/**
+ * decrement reference count
+ */
+static void
+cabx_processed_release_1(
+    CABX_PROCESSED* obj);
+
+
+
+/**
+ * copy prcessed entry
+ */
+static int
+cabx_processed_copy_ref(
+    CABX_PROCESSED* src,
+    CABX_PROCESSED** dst);
+
+
+/**
+ * calculate hash code
+ */
+static int
+cabx_processed_hash_code(
+    CABX_PROCESSED* obj);
+
+/**
+ * cabinet name
+ */
+static int
+cabx_processed_set_cabinet_name(
+    CABX_PROCESSED* obj,
+    const char* cabinet_name);
+
 
 /**
  * encode  string
@@ -521,6 +674,7 @@ cabx_create()
     CABX_OPTION* option;
     col_list* entries;
     col_map* source_path_entry_map;
+    col_map* entry_processed_map;
     result = (CABX*)cabx_i_mem_alloc(sizeof(CABX));
     option = cabx_option_create();
     entries = col_array_list_create(
@@ -537,15 +691,30 @@ cabx_create()
         (int (*)(const void*, void**))cstr_retain_1,
         (void (*)(void*))cstr_release_1,
         (void (*)(void*))cstr_release_1);
-     
+    entry_processed_map = col_rb_map_create(
+        (int (*)(const void*, const void*))cstr_compare,
+        (unsigned int (*)(const void*))cstr_hash,
+        (unsigned int (*)(const void*))cabx_processed_hash_code,
+        (int (*)(const void*, void**))cabx_processed_copy_ref,
+        (int (*)(const void*, void**))cstr_retain_1,
+        (void (*)(void*))cabx_processed_release_1,
+        (void (*)(void*))cstr_release_1);
 
-    if (result && option && entries && source_path_entry_map) {
+
+
+    if (result && option && entries
+        && source_path_entry_map
+        && entry_processed_map) {
         result->ref_count = 1;
         result->run = cabx_generate;
         result->option = option;
         result->entries = entries;
         result->source_path_entry_map = source_path_entry_map;
+        result->entry_processed_map = entry_processed_map;
     } else {
+        if (entry_processed_map) {
+            col_map_free(entry_processed_map);
+        }
         if (source_path_entry_map) {
             col_map_free(source_path_entry_map);
         }
@@ -594,6 +763,7 @@ cabx_release(
     if (obj) {
         result = --obj->ref_count;
         if (result == 0) {
+            col_map_free(obj->entry_processed_map);
             col_map_free(obj->source_path_entry_map);
             col_list_free(obj->entries);
             cabx_option_free(obj->option);
@@ -629,16 +799,22 @@ cabx_parse_option(
             .val = 'o'
         },
         {
-            .name = "cabname",
+            .name = "cab-name",
             .has_arg = required_argument,
             .flag = NULL,
             .val = 'c'
         },
         {
-            .name = "temp",
+            .name = "disk-name",
             .has_arg = required_argument,
             .flag = NULL,
-            .val = 't'
+            .val = 'd'
+        },
+        {
+            .name = "max-cabinet",
+            .has_arg = required_argument,
+            .flag = NULL,
+            .val = 'm'
         },
         {
             .name = "help",
@@ -651,7 +827,8 @@ cabx_parse_option(
     result = 0;
     while (1) {
         int opt;
-        opt = getopt_long(argc, argv, "i:o:t:c:h", options, NULL);
+        opt = getopt_long(argc, argv,
+            "i:o:d:c:m:h", options, NULL);
 
         switch (opt) {
             case 'i':
@@ -659,6 +836,12 @@ cabx_parse_option(
                 break;
             case 'c':
                 result = cabx_option_set_cabinet_name(obj->option, optarg);
+                break;
+            case 'd':
+                result = cabx_option_set_disk_name(obj->option, optarg);
+                break;
+            case 'm':
+                result = cabx_option_set_max_cabinet_size(obj->option, optarg);
                 break;
             case 'o':
                 result = cabx_option_set_output_dir(obj->option, optarg);
@@ -694,10 +877,19 @@ cabx_show_help(
     result = 0;
     printf(
 "%s [OPTIONS]\n"
-"-i, --input= [INPUT]       specify cab entry csv file.\n"
-"-o, --output= [OUTPUT]     specify cab file path.\n"
-"-h                         show this message\n",
-        exe_name);
+"-i, --input= [INPUT]               specify cab entry csv file.\n"
+"                                   default is - which means standard input.\n"
+"-o, --output= [OUTPUT]             specify output directory.\n"
+"                                   default current working directory.\n"
+"-c, --cab-name= [CAB]              specify cabinet file name template.\n"
+"                                   default \"data%%d.cab\"\n"
+"-d, --disk-name= [DISK]            specify disk name template.\n"
+"                                   default is empty (\"\") which means\n"
+"                                   not using disk\n"
+"-m, --max-cabinet= [SIZE][k|m]     specify maximum cabinet size.\n"
+"                                   default is %dbytes\n"
+"-h                                 show this message\n",
+        exe_name, LONG_MAX);
 
 
     if (exe_name) {
@@ -1020,19 +1212,43 @@ cabx_entries_iter(
     char* encoded_name;
     int encoded_attr;
     wchar_t* entry_name_w;
+    CABX_PROCESSED* processed;
     result = 0;
     encoded_attr = 0;
     encoded_name = NULL;
+    processed = NULL;
 
+    if (iter_state->last_compression_type == tcompBAD) {
+        iter_state->last_compression_type = entry->compression;
+    } else {
+        int flush_folder;
+        flush_folder = iter_state->last_compression_type != entry->compression;
+        if (flush_folder) {
+            int state;
+            wprintf(L"FCIFlushFolder-1 %ls\n", entry_name_w);
+            state = FCIFlushFolder(iter_state->fci_handle,
+                cabx_fci_get_next_cabinet,
+                cabx_fci_progress);
+            result = state ? 0 : -1;
+        }
+    }
 
     entry_name_w = str_conv_utf8_to_utf16(
         entry->entry_name, strlen(entry->entry_name) + 1,
         cabx_i_mem_alloc, cabx_i_mem_free);
 
     result = cabx_encode_str(entry->entry_name, &encoded_name, &encoded_attr);
-
+    if (result == 0) {
+        processed = cabx_processed_create();
+        result = processed ? 0 : -1;
+    }
+    if (result == 0) {
+        iter_state->generation_status->entry_name = entry->entry_name;
+    }
+    
     if (result == 0) {
         int state;
+        wprintf(L"FCIAddFile %ls\n", entry_name_w);
         state = FCIAddFile(iter_state->fci_handle,
             entry->source_file,
             encoded_name,
@@ -1041,10 +1257,18 @@ cabx_entries_iter(
             cabx_fci_progress,
             cabx_fci_get_open_info,
             entry->compression);
+        wprintf(L"FCIAddFile-1 %d %ls\n", state, entry_name_w);
+        
         result = state ? 0 : -1;
     }
+    if (result == 0) {
+        iter_state->last_compression_type = entry->compression;
+        iter_state->processed_count++;
+    }
+
     if (result == 0 && entry->flush_folder) {
         int state;
+        wprintf(L"FCIFlushFolder-2 %ls\n", entry_name_w);
         state = FCIFlushFolder(iter_state->fci_handle,
             cabx_fci_get_next_cabinet,
             cabx_fci_progress);
@@ -1053,13 +1277,28 @@ cabx_entries_iter(
   
     if (result == 0 && entry->flush_cabinet) {
         int state;
+        size_t count_of_entries;
+        BOOL call_get_next_cab;
+
+        count_of_entries = col_list_size(
+            iter_state->generation_status->cabx->entries);
+        if (iter_state->processed_count < count_of_entries) {
+            call_get_next_cab = TRUE;
+        } else {
+            iter_state->generation_status->end_of_generation = 1;   
+            call_get_next_cab = FALSE;
+        }
+        wprintf(L"FCIFlushCabinet %ls\n", entry_name_w);
         state = FCIFlushCabinet(iter_state->fci_handle,
-            FALSE,
+            call_get_next_cab,
             cabx_fci_get_next_cabinet,
             cabx_fci_progress);
         result = state ? 0 : -1;
     }
 
+    if (processed) {
+        cabx_processed_release(processed);
+    }
 
     cabx_i_mem_free(entry_name_w);
     return result;
@@ -1155,7 +1394,8 @@ cabx_encode_str(
 static int
 cabx_create_cab(
     CABX* obj,
-    HFCI fci_hdl)
+    HFCI fci_hdl,
+    CABX_GENERATION_STATUS* generation_status)
 {
     int result;
     CABX_ENTRY_ITER_STATE state;
@@ -1163,6 +1403,8 @@ cabx_create_cab(
     result = 0;
     memset(&state, 0, sizeof(state));
     state.fci_handle = fci_hdl;
+    state.last_compression_type = tcompBAD;
+    state.generation_status = generation_status;
     
     result = col_list_forward_iterate(
         obj->entries,
@@ -1196,6 +1438,7 @@ cabx_generate(
     }
     if (result == 0) {
         gen_status.cabx = obj;
+        gen_status.ccab = &cab_param;
     }
     if (result == 0) {
         fci_hdl = FCICreate(&fci_err,
@@ -1213,21 +1456,12 @@ cabx_generate(
             &gen_status);
     }
     if (result == 0) {
-        result = cabx_create_cab(obj, fci_hdl);
+        result = cabx_create_cab(obj, fci_hdl, &gen_status);
     }
 
-    if (result == 0) {
+    if (result == 0 && !gen_status.end_of_generation) {
         int state;
-        state = FCIFlushFolder(fci_hdl,
-            cabx_fci_get_next_cabinet,
-            cabx_fci_progress);
-        result = state ? 0 : -1;
-    }
-    if (result == 0) {
         gen_status.end_of_generation = 1;
-    }
-    if (result == 0) {
-        int state;
         state = FCIFlushCabinet(fci_hdl,
             FALSE,
             cabx_fci_get_next_cabinet,
@@ -1239,6 +1473,7 @@ cabx_generate(
     }
     return result;
 }
+
 
 /**
  * fill fci cab parameter
@@ -1291,14 +1526,18 @@ cabx_option_create()
     char* input;
     char* output_dir;
     char* cabinet_name;
+    char* disk_name;
     result = (CABX_OPTION*)cabx_i_mem_alloc(sizeof(CABX_OPTION));
     input = cabx_i_str_dup("-");
     output_dir = cabx_i_str_dup(".\\");
     cabinet_name = cabx_i_str_dup("data%d.cab");
-    if (result && input && output_dir && cabinet_name) {
+    disk_name = cabx_i_str_dup("");
+    if (result && input && output_dir && cabinet_name && disk_name) {
         result->input = input;
         result->output_dir = output_dir;
         result->cabinet_name = cabinet_name;
+        result->disk_name = disk_name;
+        result->max_cabinet_size = LONG_MAX;
     } else {
         if (input) {
             cabx_i_mem_free(input);
@@ -1308,6 +1547,9 @@ cabx_option_create()
         }
         if (cabinet_name) {
             cabx_i_mem_free(cabinet_name);
+        }
+        if (disk_name) {
+            cabx_i_mem_free(disk_name);
         }
         if (result) {
             cabx_i_mem_free(result);
@@ -1327,7 +1569,8 @@ cabx_option_free(
     if (opt) { 
         cabx_option_set_input(opt, NULL);
         cabx_option_set_output_dir(opt, NULL);
-        cabx_option_set_cabinet_name(opt, "data%d.cab");
+        cabx_option_set_cabinet_name(opt, NULL);
+        cabx_option_set_disk_name(opt, NULL);
         cabx_i_mem_free(opt);
     }
 }
@@ -1413,6 +1656,65 @@ cabx_option_set_cabinet_name(
         result = -1;
     }
     return result;
+}
+
+/**
+ * set disk name into option
+ */
+static int
+cabx_option_set_disk_name(
+    CABX_OPTION* opt,
+    const char* disk_name)
+{
+    int result;
+    result = 0;
+    if (opt) {
+        if (opt->disk_name != disk_name) {
+            if (opt->disk_name) {
+                cabx_i_mem_free(opt->disk_name);
+                opt->disk_name = NULL;
+            }
+            if (disk_name) {
+                opt->disk_name = cabx_i_str_dup(disk_name);
+            }
+        }
+    } else {
+        errno = EINVAL;
+        result = -1;
+    }
+    return result;
+}
+
+/**
+ * set max cabinet size by string format into option
+ */
+static int
+cabx_option_set_max_cabinet_size(
+    CABX_OPTION* opt,
+    const char* max_size_str)
+{
+    int result;
+    char* end_ptr;
+    long l_value;
+    result = 0;
+    end_ptr = NULL;
+    l_value = strtol(max_size_str, &end_ptr, 0);
+
+    result = end_ptr != max_size_str ? 0 : -1;
+
+    if (result == 0) {
+        char mod;
+        mod = *end_ptr;
+
+        if (mod == 'k' || mod == 'K') {
+            l_value *= 0x400;
+        } else if (mod == 'm' || mod == 'M') {
+            l_value *= 0x100000;
+        }
+        opt->max_cabinet_size = l_value;
+    }
+
+    return result;  
 }
 
 
@@ -1633,7 +1935,137 @@ cabx_entry_set_entry_name(
     }
     return result;
 }
-  
+
+/**
+ * create processed entry
+ */
+static CABX_PROCESSED*
+cabx_processed_create()
+{
+    CABX_PROCESSED* result;
+    result = (CABX_PROCESSED*)cabx_i_mem_alloc(sizeof(CABX_PROCESSED));
+    if (result) {
+        result->ref_count = 1;
+        result->compressed_size = 0;
+        result->uncompressed_size = 0;
+        result->cabinet_name = NULL;
+        result->cabinet_number = 0;
+    }
+    return result;
+}
+
+/**
+ * increment reference count
+ */
+static unsigned int
+cabx_processed_retain(
+    CABX_PROCESSED* obj)
+{
+    unsigned int result;
+    result = 0;
+    if (obj) {
+        result = ++obj->ref_count;
+    }
+    return result;
+}
+
+/**
+ * decrement reference count
+ */
+static unsigned int
+cabx_processed_release(
+    CABX_PROCESSED* obj)
+{
+    unsigned int result;
+    result = 0;
+    if (obj) {
+        result = --obj->ref_count;
+        if (result == 0) {
+            cabx_processed_set_cabinet_name(obj, NULL);
+            cabx_i_mem_free(obj);
+        }
+    }
+    return result;
+}
+
+/**
+ * decrement reference count
+ */
+static void
+cabx_processed_release_1(
+    CABX_PROCESSED* obj)
+{
+    cabx_processed_release(obj);
+}
+
+/**
+ * copy prcessed entry
+ */
+static int
+cabx_processed_copy_ref(
+    CABX_PROCESSED* src,
+    CABX_PROCESSED** dst)
+{
+    int result;
+    result = 0;
+    if (src && dst) {
+        cabx_processed_retain(src);
+    }
+    if (dst) {
+        *dst = src;
+    }
+    return result;
+}
+
+
+/**
+ * calculate hash code
+ */
+static int
+cabx_processed_hash_code(
+    CABX_PROCESSED* obj)
+{
+    int result;
+    result = 0;
+    if (obj) {
+        result ^= obj->compressed_size;
+        result ^= obj->uncompressed_size;
+        result ^= obj->cabinet_number;
+        result ^= str_hash_1(obj->cabinet_name); 
+    }
+    return result;
+}
+
+/**
+ * cabinet name
+ */
+static int
+cabx_processed_set_cabinet_name(
+    CABX_PROCESSED* obj,
+    const char* cabinet_name)
+{
+    int result;
+    result = 0;
+
+    if (obj->cabinet_name != cabinet_name) {
+        char* tmp_str;
+        tmp_str = NULL;
+        if (cabinet_name) {
+            tmp_str = cabx_i_str_dup(cabinet_name);
+            result = tmp_str ? 0 : -1;
+        }
+        if (result == 0) {
+            if (obj->cabinet_name) {
+                cabx_i_mem_free(obj->cabinet_name);
+            }
+            obj->cabinet_name = tmp_str;
+        }
+
+    }
+    return result;
+}
+
+
 
 /**
  * be called when a file is placed in cabinet.
@@ -1770,6 +2202,8 @@ cabx_fci_write(
 
     if (written_size != buffer_size) {
         *err = errno;
+    } else {
+        fflush(fs);
     }
     return (unsigned int)written_size;
 }
@@ -1938,14 +2372,18 @@ cabx_fci_progress(
     
     switch (status) {
         case statusFile:
+            printf("progess status file %u %u \n", data_1, data_2);
             break;
         case statusFolder:
+            gen_status->not_flushed_file_count = 0;
+            printf("progess status folder %u %u\n", data_1, data_2);
             break;
         case statusCabinet:
+            result = LONG_MAX;
             if (gen_status->end_of_generation) {
-                result = -1;
+                printf("progess status cabinet end %u %u\n", data_1, data_2);
             } else {
-                result = data_2;
+                printf("progess status cabinet %u %u\n", data_1, data_2);
             }
             break;
     }
