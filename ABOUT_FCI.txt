@@ -1,0 +1,2 @@
+Fci cabinet api has a bug.
+In specification, some folders can be in single cabinet. But you can not has multiple folders in single cabinet. It conclude that you can not have multiple compression data in a single cabinet.
