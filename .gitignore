@@ -8,7 +8,7 @@ autom4te.cache/
 install-sh
 depcomp
 build-x64/
-
+tap-driver.sh
 compile
 missing
 *.swp

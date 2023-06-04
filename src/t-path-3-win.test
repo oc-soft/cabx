@@ -1,0 +1,72 @@
+#! /usr/bin/env sh
+
+function expect()
+{
+  local test_no_l=$1
+  local line_l=`echo $2 | tr -d '\r'`
+  local expect_l=$3
+  local test_line_1_l=$4
+  local test_line_2_l=$5
+  printf "expect: %s\n" $expect_l
+  printf "actual: %s\n" $line_l
+  if [ "$line_l" = "$expect_l" ]; then
+    echo ok $test_no_l
+  else
+    echo not ok $test_no_l
+  fi
+}
+
+echo 1..7
+
+test_line_1=1st/test/to/path/interface//
+test_line_2=subpath
+expected_line='1st/test/to/path/interface\subpath'
+line=`echo "$test_line_1
+$test_line_2" | ./t-path-2`
+expect 1 $line $expected_line $test_line_1 $test_line_2
+
+test_line_1='2nd\test'
+test_line_2=test
+expected_line='2nd\test\test' 
+line=`echo "$test_line_1
+$test_line_2" | ./t-path-2`
+expect 2 $line $expected_line $test_line_1 $test_line_2
+
+test_line_1='/3rd.test//'
+test_line_2='//3rd.test'
+expected_line='/3rd.test\3rd.test'
+line=`echo "$test_line_1
+$test_line_2" | ./t-path-2`
+expect 3 $line $expected_line $test_line_1 $test_line_2
+
+test_line_1='////'
+test_line_2='//4th.test'
+expected_line='/4th.test'
+line=`echo "$test_line_1
+$test_line_2" | ./t-path-2`
+expect 4 $line $expected_line $test_line_1 $test_line_2
+
+test_line_1=''
+test_line_2='//5th.test'
+expected_line='5th.test'
+line=`echo "$test_line_1
+$test_line_2" | ./t-path-2`
+expect 5 $line $expected_line $test_line_1 $test_line_2
+   
+test_line_1='////'
+test_line_2='\//'
+expected_line='/\'
+line=`echo "$test_line_1
+$test_line_2" | ./t-path-2`
+expect 6 $line $expected_line $test_line_1 $test_line_2
+
+test_line_1='\/'
+test_line_2='///7th.test'
+expected_line='\7th.test'
+line=`echo "$test_line_1
+$test_line_2" | ./t-path-2`
+expect 7 $line $expected_line $test_line_1 $test_line_2
+   
+
+
+# vi: se ts=2 sw=2 et:

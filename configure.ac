@@ -9,9 +9,10 @@ AC_CONFIG_MACRO_DIRS([m4])
 
 LT_LANG([Windows Resource])
 
-
+AM_CONDITIONAL([MINGW_HOST], [test $host_os = mingw32])
 
 AC_PROG_CC
+AC_REQUIRE_AUX_FILE([tap-driver.sh])
 AC_CHECK_PROG([GPERF], [gperf --version], [gperf])
 
 AC_CONFIG_HEADERS([src/config.h])

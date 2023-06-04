@@ -1,0 +1,39 @@
+#! /usr/bin/env sh
+
+function expect()
+{
+  local test_no_l=$1
+  local line_l=`echo $2 | tr -d '\r'`
+  local expect_l=$3
+  local test_line_l=$4
+  printf "expect: %s\n" $expect_l
+  printf "actual: %s\n" $line_l
+  if [ "$line_l" = "$expect_l" ]; then
+    echo ok $test_no_l
+  else
+    echo not ok $test_no_l
+  fi
+}
+
+echo 1..3
+
+test_line=1st/test/to/path/interface.exe
+expected_line=1st/test/to/path 
+line=`echo $test_line | ./t-path-0`
+
+expect 1 $line $expected_line $test_line
+
+test_line='2nd/test'
+expected_line='2nd' 
+line=`echo $test_line | ./t-path-0`
+
+expect 2 $line $expected_line $test_line
+
+test_line='/3rd.test'
+expected_line='/'
+line=`echo $test_line | ./t-path-0`
+
+expect 3 $line $expected_line $test_line
+ 
+
+# vi: se ts=2 sw=2 et:

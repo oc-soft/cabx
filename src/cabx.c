@@ -13,8 +13,10 @@
 #include <stdint.h>
 #include <sys/stat.h>
 #include <limits.h>
+#include <direct.h>
 #include "exe_info.h"
 #include "col/array_list.h"
+#include "col/list_ref.h"
 #include "col/rb_map.h"
 #include "cstr.h"
 #include "csv.h"
@@ -24,6 +26,7 @@
 #include "number_parser.h"
 #include "str_conv.h"
 #include "str_hash.h"
+#include "path.h"
 
 /**
  * option for cabinet genertor
@@ -77,6 +80,16 @@ struct _CABX {
      * entry cabinet name map
      */
     col_map* entry_cab_map;
+
+    /**
+     * cabinet name to entries map
+     */
+    col_map* cab_entries_map;
+
+    /**
+     * cabinet name to output directory map
+     */
+    col_map* cab_outdir_map;
 
     /**
      * run main application
@@ -238,26 +251,12 @@ struct _CABX_GENERATION_STATUS {
      */
     CCAB* ccab;
 
-    /**
-     * count of processed files
-     */
-    unsigned long count_of_processed_files;
-
-    /**
-     * compressed size
-     */
-    unsigned long compressed_size;
 
     /**
      * end of generation
      */
     int end_of_generation;
 
-
-    /**
-     * count of files in not flushed folder
-     */
-    size_t not_flushed_file_count;
 
     /**
      * last file entry 
@@ -269,6 +268,15 @@ struct _CABX_GENERATION_STATUS {
      */
     cstr* starting_cabinet_name;
 
+    /**
+     * next cabinet name
+     */
+    cstr* next_cabinet_name;
+
+    /**
+     * next disk name
+     */
+    cstr* next_disk_name;
 };
 
 
@@ -331,6 +339,45 @@ cabx_report_cab_map(
     CABX* obj);
 
 /**
+ * put cabinet output directory
+ */
+static int
+cabx_put_cabinet_output_dir(
+    CABX* obj,
+    const char* cabinet_name,
+    const char* output_dir);
+
+/**
+ * remove last cabinet if it is empty
+ */
+static int
+cabx_remove_last_cab_if_empty(
+    CABX* obj,
+    cstr* outdir,
+    cstr* cabinet_name);
+
+/**
+ *  handle file path to for output directory
+ */
+static int
+cabx_handle_file_path_for_output_dir(
+    CABX* obj,
+    const char* file_path,
+    int (*run)(CABX*, const char*, const char*, const char*));
+
+/**
+ * create output directory if directry is not exist.
+ */
+static int
+cabx_create_output_dir_if_not(
+    CABX* obj,
+    const char* file_path,
+    const char* output_dir,
+    const char* file_name);
+
+
+
+/**
  * load entries from csv
  */
 static int
@@ -369,6 +416,26 @@ static int
 cabx_fill_cabinet_name(
     CABX* obj,
     int cab_index,
+    char* buffer,
+    size_t buffer_size);
+
+/**
+ * fill disk name
+ */
+static int
+cabx_fill_disk_name(
+    CABX* obj,
+    int disk_index,
+    char* buffer,
+    size_t buffer_size);
+
+/**
+ * copy cab path into buffer 
+ */
+static int
+cabx_fill_cab_path(
+    CABX* obj,
+    const char* cab_name,
     char* buffer,
     size_t buffer_size);
 
@@ -551,7 +618,7 @@ cabx_decode_str(
  * set last file entry 
  */
 static int
-cabinate_generation_status_set_last_file_entry(
+cabinet_generation_status_set_last_file_entry(
     CABX_GENERATION_STATUS* obj,
     cstr* last_file_entry);
 
@@ -560,9 +627,45 @@ cabinate_generation_status_set_last_file_entry(
  * set starting cabinet name 
  */
 static int
-cabinate_generation_status_set_starting_cabinet_name(
+cabinet_generation_status_set_starting_cabinet_name(
     CABX_GENERATION_STATUS* obj,
     cstr* cabinet_name);
+
+/**
+ * set next cabinet name
+ */
+static int
+cabinet_generation_status_set_next_cabinet_name(
+    CABX_GENERATION_STATUS* obj,
+    cstr* next_cabinet_name);
+
+
+/**
+ * set disk name 
+ */
+static int
+cabinet_generation_status_set_next_disk_name(
+    CABX_GENERATION_STATUS* obj,
+    cstr* disk_name);
+
+
+/**
+ * add entry into cab name to entries map
+ */
+static int
+cabx_cab_entries_add_entry(
+    col_map* cab_entries_map,
+    cstr* cab_name,
+    cstr* entry_name);
+
+/**
+ * get entry count of cab name to entries map
+ */
+static int
+cabx_cab_entries_get_entry_count(
+    col_map* cab_entries_map,
+    cstr* cab_name,
+    size_t* count);
 
 /**
  * allocate memory for fci
@@ -699,6 +802,8 @@ cabx_create()
     col_list* entries;
     col_map* source_path_entry_map;
     col_map* entry_cab_map;
+    col_map* cab_entries_map;
+    col_map* cab_outdir_map;
     result = (CABX*)cabx_i_mem_alloc(sizeof(CABX));
     option = cabx_option_create();
     entries = col_array_list_create(
@@ -725,17 +830,41 @@ cabx_create()
         (void (*)(void*))cstr_release_1,
         (void (*)(void*))cstr_release_1);
 
+    cab_outdir_map = col_rb_map_create(
+        (int (*)(const void*, const void*))cstr_compare,
+        (unsigned int (*)(const void*))cstr_hash,
+        (unsigned int (*)(const void*))cstr_hash,
+        (int (*)(const void*, void**))cstr_retain_1,
+        (int (*)(const void*, void**))cstr_retain_1,
+        (void (*)(void*))cstr_release_1,
+        (void (*)(void*))cstr_release_1);
 
+    cab_entries_map = col_rb_map_create(
+        (int (*)(const void*, const void*))cstr_compare,
+        (unsigned int (*)(const void*))cstr_hash,
+        (unsigned int (*)(const void*))col_list_ref_hash,
+        (int (*)(const void*, void**))col_list_ref_copy_1,
+        (int (*)(const void*, void**))cstr_retain_1,
+        (void (*)(void*))col_list_ref_release,
+        (void (*)(void*))cstr_release_1);
 
-    if (result && option && entries
-        && source_path_entry_map) {
+    if (result && option && entries && cab_outdir_map 
+        && source_path_entry_map && entry_cab_map && cab_entries_map) {
         result->ref_count = 1;
         result->run = cabx_generate;
         result->option = option;
         result->entries = entries;
         result->source_path_entry_map = source_path_entry_map;
         result->entry_cab_map = entry_cab_map;
+        result->cab_outdir_map = cab_outdir_map; 
+        result->cab_entries_map = cab_entries_map;
     } else {
+        if (cab_entries_map) {
+            col_map_free(cab_entries_map);
+        }
+        if (cab_outdir_map) {
+            col_map_free(cab_outdir_map); 
+        }
         if (entry_cab_map) {
             col_map_free(entry_cab_map);
         }
@@ -787,7 +916,9 @@ cabx_release(
     if (obj) {
         result = --obj->ref_count;
         if (result == 0) {
+            col_map_free(obj->cab_entries_map);
             col_map_free(obj->entry_cab_map);
+            col_map_free(obj->cab_outdir_map); 
             col_map_free(obj->source_path_entry_map);
             col_list_free(obj->entries);
             cabx_option_free(obj->option);
@@ -1519,7 +1650,7 @@ cabx_decode_str(
  * set last file entry 
  */
 static int
-cabinate_generation_status_set_last_file_entry(
+cabinet_generation_status_set_last_file_entry(
     CABX_GENERATION_STATUS* obj,
     cstr* last_file_entry)
 {
@@ -1542,7 +1673,7 @@ cabinate_generation_status_set_last_file_entry(
  * set starting cabinet name 
  */
 static int
-cabinate_generation_status_set_starting_cabinet_name(
+cabinet_generation_status_set_starting_cabinet_name(
     CABX_GENERATION_STATUS* obj,
     cstr* cabinet_name)
 {
@@ -1559,6 +1690,52 @@ cabinate_generation_status_set_starting_cabinet_name(
     }
     return result;
 }
+
+/**
+ * set next cabinet name
+ */
+static int
+cabinet_generation_status_set_next_cabinet_name(
+    CABX_GENERATION_STATUS* obj,
+    cstr* next_cabinet_name)
+{
+    int result;
+    result = 0;
+    if (next_cabinet_name != obj->next_cabinet_name) {
+        if (next_cabinet_name) {
+            cstr_retain(next_cabinet_name);
+        }
+        if (obj->next_cabinet_name) {
+            cstr_release(obj->next_cabinet_name);
+        }
+        obj->next_cabinet_name = next_cabinet_name;
+    }
+    return result;
+}
+
+
+/**
+ * set next disk name 
+ */
+static int
+cabinet_generation_status_set_next_disk_name(
+    CABX_GENERATION_STATUS* obj,
+    cstr* next_disk_name)
+{
+    int result;
+    result = 0;
+    if (next_disk_name != obj->next_disk_name) {
+        if (next_disk_name) {
+            cstr_retain(next_disk_name);
+        }
+        if (obj->next_disk_name) {
+            cstr_release(obj->next_disk_name);
+        }
+        obj->next_disk_name = next_disk_name;
+    }
+    return result;
+}
+
 
 
 /**
@@ -1612,12 +1789,16 @@ cabx_generate(
     if (result == 0) {
         gen_status.cabx = obj;
         gen_status.ccab = &cab_param;
+        result = cabx_put_cabinet_output_dir(obj,
+            cab_param.szCab,
+            cab_param.szCabPath);
     }
     if (result == 0) {
         fci_hdl = FCICreate(&fci_err,
             cabx_fci_file_placed,
             cabx_fci_alloc,
-            cabx_fci_free,
+            c
+            bx_fci_free,
             cabx_fci_open,
             cabx_fci_read,
             cabx_fci_write,
@@ -1639,8 +1820,30 @@ cabx_generate(
             FALSE,
             cabx_fci_get_next_cabinet,
             cabx_fci_progress);
-        result = state ? 0 : -1;
+        if (state) {
+            result = 0;
+        } else {
+            if (fci_err.erfOper == FCIERR_CAB_FILE) {
+                result = 0;
+            } else {
+                result = -1;
+            }
+        }
     }
+    cabinet_generation_status_set_last_file_entry(
+        &gen_status, NULL);
+
+    cabinet_generation_status_set_starting_cabinet_name(
+        &gen_status, NULL);
+
+    cabinet_generation_status_set_next_cabinet_name(
+        &gen_status, NULL);
+
+    cabinet_generation_status_set_next_disk_name(
+        &gen_status, NULL);
+
+
+
     if (fci_hdl) {
         FCIDestroy(fci_hdl);
     }
@@ -1649,6 +1852,93 @@ cabx_generate(
     }
     return result;
 }
+
+/**
+ * remove last cabinet if it is empty
+ */
+static int
+cabx_remove_last_cab_if_empty(
+    CABX* obj,
+    cstr* out_dir,
+    cstr* cab_name)
+{
+    int result;
+    size_t entry_count;
+    result = 0;
+    entry_count = 0;
+    cabx_cab_entries_get_entry_count(
+        obj->cab_entries_map, cab_name, &entry_count);
+    if (!entry_count) {
+        cstr *tmp_path;
+        char* raw_out_dir;
+        char* raw_cab_name;
+        char* raw_cab_path;
+        wchar_t* cab_path_w;
+        wchar_t* out_dir_w;
+        raw_out_dir = NULL;
+        raw_cab_name = NULL;
+        raw_cab_path = NULL;
+        cab_path_w = NULL;
+        out_dir_w = NULL;
+        tmp_path = cstr_create_01(
+            (void* (*)(unsigned int))cabx_i_mem_alloc,
+            cabx_i_mem_free);
+        result = tmp_path ? 0 : -1;  
+        if (result == 0) {
+            raw_out_dir = cstr_to_flat_str(out_dir);
+            result = raw_out_dir ? 0 : -1;
+        }
+        if (result == 0) {
+            raw_cab_name = cstr_to_flat_str(cab_name);
+            result = raw_cab_name ? 0 : -1;
+        }
+        if (result == 0) {
+            result = cstr_append(tmp_path, raw_out_dir);
+        }
+        if (result == 0) {
+            result = cstr_append(tmp_path, raw_cab_name);
+        }
+        if (result == 0) {
+            raw_cab_path = cstr_to_flat_str(tmp_path);
+            result = raw_cab_path ? 0 : -1;
+        }
+        if (result == 0) {
+            cab_path_w = (wchar_t*)str_conv_utf8_to_utf16(
+                raw_cab_path, cstr_length(tmp_path) + 1,
+                cabx_i_mem_alloc, cabx_i_mem_free);
+            result = cab_path_w ? 0 : -1;
+        }
+        if (result == 0) {
+            out_dir_w = (wchar_t*)str_conv_utf8_to_utf16(
+                raw_out_dir, cstr_length(out_dir) + 1,
+                cabx_i_mem_alloc, cabx_i_mem_free);
+            result = out_dir_w ? 0 : -1;
+        }
+        
+        if (result == 0) {
+            _wremove(cab_path_w);
+            _wrmdir(out_dir_w);
+        } 
+        
+        cabx_i_mem_free(out_dir_w);
+        cabx_i_mem_free(cab_path_w);
+        
+        if (result == 0) {
+            cstr_free_flat_str(tmp_path, raw_cab_path);
+        }
+        if (raw_cab_name) {
+            cstr_free_flat_str(cab_name, raw_cab_name);
+        }  
+        if (raw_out_dir) {
+            cstr_free_flat_str(out_dir, raw_out_dir);
+        }
+        if (tmp_path) {
+            cstr_release(tmp_path);
+        }
+    }
+    return result;
+}
+
 
 
 /**
@@ -1667,14 +1957,24 @@ cabx_fill_cab_param(
     param->cb = ULONG_MAX;
     param->cbFolderThresh = 0; 
     param->iCab = 0;
+
     cabx_fill_cabinet_name(obj, 
         param->iCab,
         param->szCab,
         sizeof(param->szCab));
 
-    memcpy(param->szCabPath,
-        obj->option->output_dir,
-        strlen(obj->option->output_dir) + 1);
+    cabx_fill_disk_name(obj, 
+        param->iDisk,
+        param->szDisk,
+        sizeof(param->szDisk));
+
+    cabx_fill_cab_path(
+        obj,
+        param->szCab,
+        param->szCabPath,
+        sizeof(param->szCabPath));
+
+
     param->setID = (int)rand();
     return result;
 }
@@ -1737,6 +2037,74 @@ cabx_report_cab_map(
     }
     return result;
 }
+
+/**
+ * add entry into cab name to entries map
+ */
+static int
+cabx_cab_entries_add_entry(
+    col_map* cab_entries_map,
+    cstr* cab_name,
+    cstr* entry_name)
+{
+    int result;
+    col_list_ref* entries;
+    result = 0;
+    entries = NULL;
+    col_map_get(cab_entries_map, cab_name, (void**)&entries);
+    if (!entries) {
+        col_list* entries_list;
+        entries_list = col_array_list_create(10, 10,
+            (int (*)(void*))cstr_hash,
+            (int (*)(const void*, void**))cstr_retain_1,
+            (void (*)(void*))cstr_release_1);
+
+        result = entries_list ? 0 : -1;
+        if (result == 0) {
+            entries = col_list_ref_create(entries_list,
+                (int (*)(const void*, const void*))cstr_compare);
+            result = entries ? 0 : -1;
+        }
+        if (result == 0) {
+            result = col_map_put(cab_entries_map, cab_name, entries);
+        }
+    }
+    if (result == 0) {
+        result = col_list_ref_append(entries, entry_name);
+    }
+
+    if (entries) {
+        col_list_ref_release(entries);
+    }
+    return result;
+}
+
+/**
+ * get entry count of cab name to entries map
+ */
+static int
+cabx_cab_entries_get_entry_count(
+    col_map* cab_entries_map,
+    cstr* cab_name,
+    size_t* count)
+{
+    int result;
+    col_list_ref* entries;
+    result = 0;
+    entries = NULL;
+    col_map_get(cab_entries_map, cab_name, (void**)&entries);
+    if (entries) {
+        *count = col_list_ref_size(entries); 
+    } else {
+        result = -1;
+    }
+    if (entries) {
+        col_list_ref_release(entries);
+    }
+    return result;
+}
+
+
 
 /**
  * entry iterator
@@ -1850,6 +2218,63 @@ cabx_fill_cabinet_name(
     }
     return result;
 }
+
+/**
+ * fill disk name
+ */
+static int
+cabx_fill_disk_name(
+    CABX* obj,
+    int disk_index,
+    char* buffer,
+    size_t buffer_size)
+{
+    int result;
+    result = 0;
+    if (obj) {
+        snprintf(
+            buffer, buffer_size,
+            obj->option->disk_name,
+            disk_index);
+    } else {
+        result = -1;
+        errno = EINVAL;
+    }
+    return result;
+}
+
+/**
+ * copy cab path into buffer 
+ */
+static int
+cabx_fill_cab_path(
+    CABX* obj,
+    const char* cab_name,
+    char* buffer,
+    size_t buffer_size)
+{
+    int result;
+    result = 0;
+    if (obj) {
+        char* output_dir;
+        output_dir = NULL;
+        result = path_append_dir_separator(obj->option->output_dir,
+            &output_dir, cabx_i_mem_alloc, cabx_i_mem_free);
+        
+        if (result == 0) {
+            strncpy(buffer, output_dir, buffer_size);    
+        }
+        if (output_dir) {
+            cabx_i_mem_free(output_dir);
+        }
+    } else {
+        result = -1;
+        errno = EINVAL;
+    }
+    return result;
+}
+
+
 
 /**
  * run cabinet generator
@@ -2369,27 +2794,33 @@ cabx_fci_file_placed(
                 gen_status->cabx->entry_cab_map,
                 gen_status->last_file_entry,
                 gen_status->starting_cabinet_name);
-            cabinate_generation_status_set_last_file_entry(
+            cabinet_generation_status_set_last_file_entry(
                 gen_status, NULL);
-            cabinate_generation_status_set_starting_cabinet_name(
+            cabinet_generation_status_set_starting_cabinet_name(
                 gen_status, NULL);
         }
     }
     if (state == 0) {
         if (file_continuation && !gen_status->last_file_entry) {
-            state = cabinate_generation_status_set_last_file_entry(
+            state = cabinet_generation_status_set_last_file_entry(
                 gen_status, file_entry_cstr);
             if (state == 0) {
-                state = cabinate_generation_status_set_starting_cabinet_name(
+                state = cabinet_generation_status_set_starting_cabinet_name(
                     gen_status, cab_name_cstr);
             }
         } else if (!file_continuation) {
             state = col_map_put(
                 gen_status->cabx->entry_cab_map,
                 file_entry_cstr, cab_name_cstr);
-        }
-    }
 
+        }
+
+    }
+    if (state == 0) {
+        state = cabx_cab_entries_add_entry(
+            gen_status->cabx->cab_entries_map,
+            cab_name_cstr, file_entry_cstr);
+    }
     if (state == 0) {
         decode_file_w = str_conv_utf8_to_utf16(
             decode_file, strlen(decode_file) + 1,
@@ -2441,6 +2872,7 @@ cabx_fci_file_placed(
     return result;
 }
 
+
 /**
  * allocate memory for fci
  */
@@ -2474,11 +2906,24 @@ cabx_fci_open(
 {
     FILE* fs;
     wchar_t* file_path_w;
+    int state;
+    CABX_GENERATION_STATUS* gen_status;
+
     fs = NULL;
-    file_path_w = str_conv_utf8_to_utf16(
-        file_path, strlen(file_path) + 1, 
-        cabx_i_mem_alloc, cabx_i_mem_free);
-    if (file_path_w) {
+    file_path_w = NULL;
+    gen_status = (CABX_GENERATION_STATUS*)user_data;
+    
+    state = cabx_handle_file_path_for_output_dir(
+        gen_status->cabx, file_path, 
+        cabx_create_output_dir_if_not);
+
+    if (state == 0) {
+        file_path_w = str_conv_utf8_to_utf16(
+            file_path, strlen(file_path) + 1, 
+            cabx_i_mem_alloc, cabx_i_mem_free);
+        state = file_path_w ? 0 : -1;
+    }
+    if (state == 0) {
         int fd;
         fd = _wopen(file_path_w, open_flag, mode); 
         if (fd >= 0) {
@@ -2516,6 +2961,176 @@ cabx_fci_open(
     }
     return (intptr_t)fs;
 }
+
+/**
+ *  handle file path to for output directory
+ */
+static int
+cabx_handle_file_path_for_output_dir(
+    CABX* obj,
+    const char* file_path,
+    int (*run)(CABX*, const char*, const char*, const char*))
+{
+    char* file_name;
+    char* dir_path;
+    size_t dir_path_len;
+    size_t file_name_len;
+    int result;
+    cstr* file_name_cstr;
+    cstr* dir_path_cstr;
+    result = 0;
+    file_name = NULL;
+    dir_path = NULL;
+    dir_path_len = 0;
+    file_name_len = 0;
+    file_name_cstr = NULL;
+    dir_path_cstr = NULL;
+    path_get_file_spec(
+            file_path,
+            &file_name,
+            cabx_i_mem_alloc,
+            cabx_i_mem_free);
+    result = file_name ? 0 : -1;
+    if (result == 0) {
+        dir_path_len = strlen(file_path);
+        file_name_len = strlen(file_name);
+        dir_path_len -= file_name_len;
+        dir_path = (char*)cabx_i_mem_alloc(dir_path_len + 1);
+        result = dir_path ? 0 : -1; 
+    }
+    if (result == 0) {
+        memcpy(dir_path, file_path, dir_path_len);
+        dir_path[dir_path_len] = '\0';
+        file_name_cstr = cstr_create_00(
+            file_name, file_name_len,
+            (void* (*)(unsigned int))cabx_i_mem_alloc,
+            cabx_i_mem_free);
+        result = file_name_cstr ? 0 : -1;
+    }
+    if (result == 0) {
+        dir_path_cstr = cstr_create_00(
+            dir_path, dir_path_len,
+            (void* (*)(unsigned int))cabx_i_mem_alloc,
+            cabx_i_mem_free);
+        result = dir_path_cstr ? 0 : -1;
+    }
+    if (result == 0) {
+        cstr* dir_path_cstr_0;
+        char* dir_path_0;
+        dir_path_cstr_0 = NULL;
+        dir_path_0 = NULL;
+        col_map_get(obj->cab_outdir_map, file_name_cstr,
+            (void**)&dir_path_cstr_0);
+
+        if (dir_path_cstr_0) {
+            dir_path_0 = cstr_to_flat_str(dir_path_cstr_0);
+        }
+
+        if (dir_path_0) {
+            char* file_path_0;
+            file_path_0 = NULL;
+            result = path_join(dir_path_0, file_name, &file_path_0,
+                cabx_i_mem_alloc, cabx_i_mem_free);
+            if (file_path_0) {
+                if (strcmp(file_path, file_path_0) == 0) {
+                    result = run(obj, file_path, dir_path, file_name);
+                }
+            }
+            if (file_path_0) {
+                cabx_i_mem_free(file_path_0);
+            }
+        }
+
+        if (dir_path_0) {
+            cstr_free_flat_str(dir_path_cstr_0, dir_path_0);
+        }
+
+        if (dir_path_cstr_0) {
+            cstr_release(dir_path_cstr_0);
+        }
+    } 
+
+    if (file_name_cstr) {
+        cstr_release(file_name_cstr);
+    }
+    if (dir_path_cstr) {
+        cstr_release(dir_path_cstr);
+    }
+ 
+    cabx_i_mem_free(file_name);
+    cabx_i_mem_free(dir_path);
+
+    return result;
+}
+
+/**
+ * create output directory if directry donot exist.
+ */
+static int
+cabx_create_output_dir_if_not(
+    CABX* obj,
+    const char* file_path,
+    const char* output_dir,
+    const char* file_name)
+{
+    int result;
+    result = 0;
+
+    wchar_t* output_dir_w; 
+
+    output_dir_w = (wchar_t*)str_conv_utf8_to_utf16(
+        output_dir, strlen(output_dir) + 1,
+        cabx_i_mem_alloc, cabx_i_mem_free);
+
+    result = output_dir_w ? 0 : -1;
+    if (result == 0) {
+        int status;
+        struct _stat st;
+        memset(&st, 0, sizeof(st));
+        status = _wstat(output_dir_w, &st);
+        if (status) {
+            result = _wmkdir(output_dir_w);
+        }
+    }
+    cabx_i_mem_free(output_dir_w);
+    return result;
+}
+
+
+/**
+ * remove output directory if directry exist.
+ */
+static int
+cabx_remove_output_dir(
+    CABX* obj,
+    const char* file_path,
+    const char* output_dir,
+    const char* file_name)
+{
+    int result;
+    result = 0;
+
+    wchar_t* output_dir_w; 
+
+    output_dir_w = (wchar_t*)str_conv_utf8_to_utf16(
+        output_dir, strlen(output_dir) + 1,
+        cabx_i_mem_alloc, cabx_i_mem_free);
+
+    result = output_dir_w ? 0 : -1;
+    if (result == 0) {
+        int status;
+        struct _stat st;
+        memset(&st, 0, sizeof(st));
+        status = _wstat(output_dir_w, &st);
+        if (status == 0) {
+            result = _wrmdir(output_dir_w);
+        }
+    }
+    cabx_i_mem_free(output_dir_w);
+    return result;
+}
+
+
 
 /**
  * read data for fci
@@ -2698,17 +3313,131 @@ cabx_fci_get_next_cabinet(
     void* user_data)
 {
     int result;
+    int status;
     CABX_GENERATION_STATUS* gen_status;
-    result = FALSE;
+    cstr* cab_name_cstr;
+    cstr* output_dir_cstr;
+    result = TRUE;
+    status = 0;
+
+    cab_name_cstr = NULL;
+    output_dir_cstr = NULL;
 
     gen_status = (CABX_GENERATION_STATUS*)user_data;
+    if (!gen_status->end_of_generation) {
+        cabx_fill_cabinet_name(
+            gen_status->cabx,
+            cab_param->iCab,
+            cab_param->szCab,
+            sizeof(cab_param->szCab));
 
-    cabx_fill_cabinet_name(
-        gen_status->cabx,
-        cab_param->iCab,
-        cab_param->szCab,
-        sizeof(cab_param->szCab));
+        cabx_fill_disk_name(
+            gen_status->cabx,
+            cab_param->iDisk,
+            cab_param->szDisk,
+            sizeof(cab_param->szDisk));
 
+        cabx_fill_cab_path(
+            gen_status->cabx,
+            cab_param->szCab,
+            cab_param->szCabPath,
+            sizeof(cab_param->szCabPath));
+
+        cab_name_cstr = cstr_create_00(
+            cab_param->szCab, strlen(cab_param->szCab),
+            (void* (*)(unsigned int))cabx_i_mem_alloc, 
+            cabx_i_mem_free);
+        status = cab_name_cstr ? 0 : -1;
+
+
+        if (status == 0) {
+            output_dir_cstr = cstr_create_00(
+                gen_status->cabx->option->output_dir,
+                strlen(gen_status->cabx->option->output_dir),
+                (void* (*)(unsigned int))cabx_i_mem_alloc, 
+                cabx_i_mem_free);
+            status = output_dir_cstr ? 0 : -1;
+        }
+        if (status == 0) {
+            status = cabx_put_cabinet_output_dir(
+                gen_status->cabx,
+                cab_param->szCab,
+                cab_param->szCabPath);
+        }
+        if (status == 0) {
+            status = cabinet_generation_status_set_next_cabinet_name(gen_status,
+                cab_name_cstr);
+        }
+        if (status == 0) {
+            status = cabinet_generation_status_set_next_disk_name(gen_status,
+                output_dir_cstr);
+        }
+
+    } else {
+        memset(cab_param->szCab, 0, sizeof(cab_param->szCab));
+        memset(cab_param->szDisk, 0, sizeof(cab_param->szDisk));
+        memset(cab_param->szCabPath, 0, sizeof(cab_param->szCabPath));
+    }
+
+    if (cab_name_cstr) {
+        cstr_release(cab_name_cstr);
+    }
+    if (output_dir_cstr) {
+        cstr_release(output_dir_cstr);
+    }
+
+    return result;
+}
+
+/**
+ * put cabinet output directory
+ */
+static int
+cabx_put_cabinet_output_dir(
+    CABX* obj,
+    const char* cabinet_name,
+    const char* output_dir)
+{
+    int result;
+    if (cabinet_name && output_dir) {
+        cstr* cab_name_cstr;
+        cstr* output_dir_cstr;
+        result = 0;
+
+        cab_name_cstr = NULL;
+        output_dir_cstr = NULL;
+
+        cab_name_cstr = cstr_create_00(
+            cabinet_name, strlen(cabinet_name),
+            (void* (*)(unsigned int))cabx_i_mem_alloc, 
+            cabx_i_mem_free);
+        result = cab_name_cstr ? 0 : -1;
+
+
+        if (result == 0) {
+            output_dir_cstr = cstr_create_00(
+                output_dir,
+                strlen(output_dir),
+                (void* (*)(unsigned int))cabx_i_mem_alloc, 
+                cabx_i_mem_free);
+            result = output_dir_cstr ? 0 : -1;
+        }
+        if (result == 0) {
+            result = col_map_put(
+                obj->cab_outdir_map,
+                cab_name_cstr, output_dir_cstr);
+        }
+    
+        if (cab_name_cstr) {
+            cstr_release(cab_name_cstr);
+        }
+        if (output_dir_cstr) {
+            cstr_release(output_dir_cstr);
+        }
+    } else {
+        result = -1;
+        errno = EINVAL;
+    }
     return result;
 }
 
@@ -2732,10 +3461,8 @@ cabx_fci_progress(
         case statusFile:
             break;
         case statusFolder:
-            gen_status->not_flushed_file_count = 0;
             break;
         case statusCabinet:
-            result = 0;
             break;
     }
 
