@@ -11,5 +11,7 @@ build-x64/
 tap-driver.sh
 compile
 missing
+COPYING
+INSTALL
 *.swp
 *~
