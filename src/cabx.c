@@ -1797,8 +1797,7 @@ cabx_generate(
         fci_hdl = FCICreate(&fci_err,
             cabx_fci_file_placed,
             cabx_fci_alloc,
-            c
-            bx_fci_free,
+            cabx_fci_free,
             cabx_fci_open,
             cabx_fci_read,
             cabx_fci_write,
