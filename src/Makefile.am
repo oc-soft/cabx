@@ -1,5 +1,6 @@
-
+if MINGW_HOST
 bin_PROGRAMS=cabx
+endif
 check_PROGRAMS = t-path-0 t-path-1 t-path-2
 
 
