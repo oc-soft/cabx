@@ -20,6 +20,17 @@ number_parser_str_to_int(
     int base,
     int* value);
 
+/**
+ * string to long with byte size modifier 
+ */
+int
+number_parser_str_to_long_with_mod(
+    const char* str,
+    int base,
+    unsigned long* value);
+
+
+
 _NUMBER_PARSER_ITFC_END 
 
 /* vi: se ts=4 sw=4 et: */

@@ -139,6 +139,12 @@ struct _CABX_OPTION {
 
 
     /**
+     * folder size
+     */
+    unsigned long folder_threshold;
+
+
+    /**
      * report file
      */
     char* report_file;
@@ -514,6 +520,14 @@ cabx_option_set_max_cabinet_size(
     CABX_OPTION* opt,
     const char* max_size);
 
+/**
+ * set cabinet folder threshold size by string format into option
+ */
+static int
+cabx_option_set_folder_threshold(
+    CABX_OPTION* opt,
+    const char* threshold_size);
+
 
 /**
  * set report file into option
@@ -792,6 +806,17 @@ cabx_fci_get_open_info(
 
 
 /**
+ * default max cabinet size
+ */
+const unsigned long CABX_MAX_CABINET_SIZE_DEF = ULONG_MAX;
+
+/**
+ * default folder threshold size
+ */
+const unsigned long CABX_FOLDER_THRESHOLD_DEF = ULONG_MAX;
+
+
+/**
  * create cabinet generator instance
  */
 CABX*
@@ -972,6 +997,12 @@ cabx_parse_option(
             .val = 'm'
         },
         {
+            .name = "folder-thresh",
+            .has_arg = required_argument,
+            .flag = NULL,
+            .val = 'f'
+        },
+        {
             .name = "report",
             .has_arg = optional_argument,
             .flag = NULL,
@@ -994,7 +1025,7 @@ cabx_parse_option(
     while (1) {
         int opt;
         opt = getopt_long(argc, argv,
-            "i:o:d:c:m:r::hs", options, NULL);
+            "i:o:d:c:m:f:r::hs", options, NULL);
 
         switch (opt) {
             case 'i':
@@ -1008,6 +1039,9 @@ cabx_parse_option(
                 break;
             case 'm':
                 result = cabx_option_set_max_cabinet_size(obj->option, optarg);
+                break;
+            case 'f':
+                result = cabx_option_set_folder_threshold(obj->option, optarg);
                 break;
             case 'r':
                 result = cabx_option_set_report(obj->option, optarg);
@@ -1059,13 +1093,17 @@ cabx_show_help(
 "                                   default is empty (\"\") which means\n"
 "                                   not using disk\n"
 "-m, --max-cabinet= [SIZE][k|m]     specify maximum cabinet size.\n"
-"                                   default is %dbytes\n"
+"                                   default is %lu bytes\n"
+"-f, --folder-thresh= [SIZE][k|m]   specify folder threshold size.\n"
+"                                   default is %lu bytes\n"
 "-r, --report= [FILE]               specify report file.\n"
 "                                   if you set \"-\" as file, then print to\n"
 "                                   stdout.\n"
 "-s, --show-status                  show proccessing status.\n"
 "-h                                 show this message\n",
-        exe_name, LONG_MAX);
+        exe_name,
+        CABX_MAX_CABINET_SIZE_DEF,
+        CABX_FOLDER_THRESHOLD_DEF);
 
 
     if (exe_name) {
@@ -1953,8 +1991,8 @@ cabx_fill_cab_param(
 
     memset(param, 0, sizeof(*param));
 
-    param->cb = ULONG_MAX;
-    param->cbFolderThresh = 0; 
+    param->cb = obj->option->max_cabinet_size;
+    param->cbFolderThresh = obj->option->folder_threshold; 
     param->iCab = 0;
 
     cabx_fill_cabinet_name(obj, 
@@ -2309,7 +2347,8 @@ cabx_option_create()
         result->output_dir = output_dir;
         result->cabinet_name = cabinet_name;
         result->disk_name = disk_name;
-        result->max_cabinet_size = LONG_MAX;
+        result->max_cabinet_size = CABX_MAX_CABINET_SIZE_DEF;
+        result->folder_threshold = CABX_FOLDER_THRESHOLD_DEF;
         result->report_file = NULL;
     } else {
         if (input) {
@@ -2471,28 +2510,34 @@ cabx_option_set_max_cabinet_size(
     const char* max_size_str)
 {
     int result;
-    char* end_ptr;
     long l_value;
-    result = 0;
-    end_ptr = NULL;
-    l_value = strtol(max_size_str, &end_ptr, 0);
-
-    result = end_ptr != max_size_str ? 0 : -1;
-
+    l_value = 0;
+    result = number_parser_str_to_long_with_mod(max_size_str, 0, &l_value);
     if (result == 0) {
-        char mod;
-        mod = *end_ptr;
-
-        if (mod == 'k' || mod == 'K') {
-            l_value *= 0x400;
-        } else if (mod == 'm' || mod == 'M') {
-            l_value *= 0x100000;
-        }
         opt->max_cabinet_size = l_value;
     }
 
     return result;  
 }
+
+/**
+ * set cabinet folder threshold size by string format into option
+ */
+static int
+cabx_option_set_folder_threshold(
+    CABX_OPTION* opt,
+    const char* threshold)
+{
+    int result;
+    long l_value;
+    l_value = 0;
+    result = number_parser_str_to_long_with_mod(threshold, 0, &l_value);
+    if (result == 0) {
+        opt->folder_threshold = l_value;
+    }
+    return result;  
+}
+
 
 /**
  * set report file into option
