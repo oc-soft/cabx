@@ -1468,8 +1468,15 @@ cabx_entries_iter(
         result = state ? 0 : -1;
     }
     if (result == 0) {
+        int call_get_next_cab;
         iter_state->last_compression_type = entry->compression;
         iter_state->processed_count++;
+
+        call_get_next_cab = cabx_entries_iter_is_end_of_entry(iter_state);
+        iter_state->generation_status->end_of_generation = 
+            cabx_entries_iter_is_end_of_entry(iter_state);
+
+
     }
 
     if (result == 0 && entry->flush_folder) {
@@ -1482,11 +1489,10 @@ cabx_entries_iter(
   
     if (result == 0 && entry->flush_cabinet) {
         int state;
-        BOOL call_get_next_cab;
-        call_get_next_cab = cabx_entries_iter_is_end_of_entry(iter_state)
-            ? TRUE : FALSE;
+
+
         state = FCIFlushCabinet(iter_state->fci_handle,
-            call_get_next_cab,
+            TRUE,
             cabx_fci_get_next_cabinet,
             cabx_fci_progress);
         result = state ? 0 : -1;
@@ -1854,7 +1860,7 @@ cabx_generate(
         int state;
         gen_status.end_of_generation = 1;
         state = FCIFlushCabinet(fci_hdl,
-            FALSE,
+            TRUE,
             cabx_fci_get_next_cabinet,
             cabx_fci_progress);
         if (state) {
