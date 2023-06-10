@@ -3,6 +3,8 @@
 #include <unistd.h>
 #include <iconv.h>
 #include <locale.h>
+#include <time.h>
+#include <stdlib.h>
 #include "cabx.h"
 #include "str_conv.h"
 
@@ -52,6 +54,7 @@ wmain(
     result = 0;
     cab = NULL;
     setlocale(LC_ALL, "");
+    srand((unsigned int)time(NULL));
     argv_utf8 = argv_to_utf8(argc, argv);
 
     result = argv_utf8 ? 0 : -1;
