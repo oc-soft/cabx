@@ -14,6 +14,7 @@
 #include <sys/stat.h>
 #include <limits.h>
 #include <direct.h>
+#include <io.h>
 #include "exe_info.h"
 #include "col/array_list.h"
 #include "col/list_ref.h"
@@ -804,6 +805,14 @@ cabx_fci_get_open_info(
     int* err,
     void* user_data);
 
+
+/**
+ * get file path from stream handle.
+ * You have to free memory by calling cabx_i_mem_free.
+ */
+static wchar_t*
+cabx_fci_get_file_path_from_stream_handle(
+    FILE* fs);
 
 /**
  * default max cabinet size
@@ -2975,7 +2984,7 @@ cabx_fci_open(
     }
     if (state == 0) {
         int fd;
-        fd = _wopen(file_path_w, open_flag, mode); 
+        fd = _wopen(file_path_w, open_flag | _O_BINARY, mode); 
         if (fd >= 0) {
             const char* f_mode;
             int r_opt = _O_RDONLY;
@@ -2986,17 +2995,17 @@ cabx_fci_open(
             int a_p_opt = _O_RDWR | _O_CREAT | _O_APPEND;
             
             if ((open_flag & a_p_opt) == a_p_opt) {
-                f_mode = "a+";
+                f_mode = "a+b";
             } else if ((open_flag & a_opt) == a_opt) {
-                f_mode = "a";
+                f_mode = "ab";
             } else if ((open_flag & w_p_opt) == w_p_opt) {
-                f_mode = "w+";
+                f_mode = "w+b";
             } else if ((open_flag & w_opt) == w_opt) {
-                f_mode = "w";
+                f_mode = "wb";
             } else if ((open_flag & r_p_opt) == r_p_opt) {
-                f_mode = "r+";
+                f_mode = "r+b";
             } else {
-                f_mode = "r";
+                f_mode = "rb";
             }
             fs = _fdopen(fd, f_mode);
         }
@@ -3199,6 +3208,7 @@ cabx_fci_read(
     fs = (FILE*)file_hdl;
     read_size = fread(buffer, 1, buffer_size, fs);
 
+
     if (read_size == 0 && feof(fs) == 0) {
         *err = errno;
     }
@@ -3253,6 +3263,7 @@ cabx_fci_seek(
         } else {
             result = ftell(fs);
         }
+
     } else {
         *err = EINVAL;
     }
@@ -3623,6 +3634,50 @@ cabx_fci_get_open_info(
     }
     if (fs) {
         cabx_fci_close((intptr_t)fs, err, user_data);
+    }
+    return result;
+}
+
+/**
+ * get file path from stream handle.
+ * You have to free memory by calling cabx_i_mem_free.
+ */
+static wchar_t*
+cabx_fci_get_file_path_from_stream_handle(
+    FILE* fs)
+{
+    HANDLE fh;
+    int fn;
+    wchar_t* result;
+    fh = NULL; 
+    fn = _fileno(fs);
+    result = NULL;
+    if (fn != -1) { 
+        fh = (HANDLE)_get_osfhandle(fn);
+    }
+    if (fh && fh != INVALID_HANDLE_VALUE) {
+        DWORD path_name_length;
+        path_name_length = GetFinalPathNameByHandleW(fh, NULL, 0, 0);
+
+        if (path_name_length) {
+            wchar_t* tmp_path;
+            tmp_path = (wchar_t*)cabx_i_mem_alloc(
+                sizeof(wchar_t) * path_name_length);
+
+            if (tmp_path) {
+                DWORD path_name_length_copied;
+                path_name_length_copied = GetFinalPathNameByHandleW(
+                    fh, tmp_path, path_name_length, 0);
+
+                if (path_name_length_copied + 1 == path_name_length) {
+                    result = tmp_path;
+                    tmp_path = NULL;
+                }
+            }
+            if (tmp_path) {
+                cabx_i_mem_free(tmp_path);
+            }
+        }
     }
     return result;
 }
